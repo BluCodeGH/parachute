@@ -54,8 +54,8 @@ def recurse(url, dest, fn):
   return res
 
 if config["repos"]:
-  print("Found installed programs: " + ", ".join([repo["name"] for repo in config["repos"]]))
-  warn("Checking for updates...")
+  say("Found installed programs: " + ", ".join([repo["name"] for repo in config["repos"]]))
+  say("Checking for updates...")
 
   def pull(url, dest):
     res = BytesIO()
@@ -112,15 +112,24 @@ quit      - quit parachute""")
       err("Invalid source URL.", 1)
       continue
     name = reName.match(source).group(1)
-    say("Installing " + name, 2)
+    say("Downloading " + name, 2)
     def clone(url, dest):
       porcelain.clone(url, dest, errstream=BytesIO())
       return True
     if recurse(source, name, clone):
+      if module := os.path.isfile(os.path.join(name, "setup.py")):
+        say("Installing " + name, 2)
+        res = subprocess.run(["pip", "install", os.path.join(".", name)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
+        if res.returncode != 0:
+          err("Error installing module {}: {}".format(name, res.stderr), 2)
+          continue
       if os.path.isfile(os.path.join(name, "requirements.txt")):
-        subprocess.run(["pip", "install", "-r", os.path.join(name, "requirements.txt")])
-      os.makedirs(os.path.join("data", name), exist_ok=True)
-      config["repos"].append({"source": source, "location": name, "name": name})
+        say("Installing dependencies", 2)
+        res = subprocess.run(["pip", "install", "-r", os.path.join(name, "requirements.txt")], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
+        if res.returncode != 0:
+          err("Error installing dependencies: {}".format(res.stderr), 2)
+          continue
+      config["repos"].append({"source": source, "location": name, "name": name, "module": module})
       with open("config.json", "w") as oF:
         oF.write(json.dumps(config, indent=2))
       cmds.append(name)
@@ -137,10 +146,13 @@ quit      - quit parachute""")
     try:
       sys.path.append(os.path.join(os.getcwd(), name))
       sys.argv = ["parachute"] + args
-      os.makedirs(os.path.join("data", name), exist_ok=True)
-      os.chdir(os.path.join("data", name))
+      os.chdir(name)
       if name not in modules:
-        modules[name] = importlib.import_module(name)
+        if [r["module"] for r in config["repos"] if r["name"] == name][0]:
+          modules[name] = importlib.import_module("{}.__main__".format(name))
+          print("imported")
+        else:
+          modules[name] = importlib.import_module(name)
       else:
         importlib.reload(modules[name])
     except Exception as e:
@@ -149,4 +161,4 @@ quit      - quit parachute""")
       pass
     finally:
       sys.path.pop(-1)
-      os.chdir(os.path.join("..", ".."))
+      os.chdir("..")

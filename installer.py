@@ -28,8 +28,8 @@ for executable in ["python3", "python", "py"]:
     break
 if not python:
   err("Python must be installed on your system.")
+  input("Press enter to go to the downloads page.")
   webbrowser.open("https://www.python.org/downloads/")
-  input("Press enter to quit.")
   sys.exit(1)
 
 update = False
@@ -68,11 +68,12 @@ if not isdir("venv"):
     f.write("[install]\nuser = false")
 
 try:
+  info("Entering virtualenv.")
   old_os_path = os.environ.get("PATH", "")
   os.environ["PATH"] = join(os.getcwd(), "venv", "bin") + os.pathsep + old_os_path
 
   if update:
-    warn("Updating dependencies...")
+    info("Updating dependencies...")
     res = subprocess.run(["pip", "install", "-r", "requirements.txt"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=False)
     if res.returncode != 0:
       err("Error updating dependencies:", res.stderr)
