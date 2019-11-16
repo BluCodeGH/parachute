@@ -2,6 +2,7 @@ import importlib
 from io import BytesIO
 import json
 import os
+from shutil import copyfile
 import subprocess
 import sys
 import re
@@ -9,6 +10,7 @@ import readline
 from colorama import init, Fore, Style
 from dulwich import porcelain
 init(autoreset=True)
+
 
 def say(text, depth=0):
   print(depth * "  " + Fore.BLUE + "! " + Style.RESET_ALL + text)
@@ -18,14 +20,6 @@ def err(text, depth=0):
   print(depth * "  " + Fore.RED + "! " + Style.RESET_ALL + text)
 def ask(q, depth=0):
   return input(depth * "  " + Fore.GREEN + "? " + Style.RESET_ALL + q)
-
-try:
-  with open("config.json") as iF:
-    config = json.load(iF)
-except FileNotFoundError:
-  with open("config.json", "w") as oF:
-    oF.write(json.dumps({"repos": []}, indent=2))
-  config = {"repos": []}
 
 # recursively apply fn across every submodule in a repo
 def recurse(url, dest, fn):
@@ -53,6 +47,15 @@ def recurse(url, dest, fn):
     pass
   return res
 
+
+try:
+  with open("config.json") as iF:
+    config = json.load(iF)
+except FileNotFoundError:
+  with open("config.json", "w") as oF:
+    oF.write(json.dumps({"repos": []}, indent=2))
+  config = {"repos": []}
+
 if config["repos"]:
   say("Found installed programs: " + ", ".join([repo["name"] for repo in config["repos"]]))
   say("Checking for updates...")
@@ -74,9 +77,6 @@ if config["repos"]:
 else:
   say("No programs installed.")
 
-cmds = ["help", "install", "quit"] + [repo["name"] for repo in config["repos"]]
-readline.parse_and_bind("tab: complete")
-readline.set_completer(lambda text, i: [cmd for cmd in cmds if cmd.startswith(text)][i])
 
 reURL = re.compile(
         r'^(?:http|ftp)s?://' # http:// or https://
@@ -87,8 +87,79 @@ reURL = re.compile(
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
 reName = re.compile(r'.*/([^/]+)\.git$')
 
-modules = {}
+def install():
+  source = ask("Please enter a source URL: ", 1)
+  if not source.endswith(".git") or reURL.match(source) is None:
+    err("Invalid source URL.", 1)
+    return False
+  name = reName.match(source).group(1)
 
+  def clone(url, dest):
+    porcelain.clone(url, dest, errstream=BytesIO())
+    return True
+
+  say("Downloading " + name, 1)
+  if not recurse(source, name, clone):
+    err("Something went wrong while installing " + name, 1)
+    return False
+
+  if module := os.path.isfile(os.path.join(name, "setup.py")):
+    say("Installing " + name, 1)
+    res = subprocess.run(["pip", "install", os.path.join(".", name)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
+    if res.returncode != 0:
+      err("Error installing module {}: {}".format(name, res.stderr), 1)
+      return False
+
+  if os.path.isfile(os.path.join(name, "requirements.txt")):
+    say("Installing dependencies", 1)
+    res = subprocess.run(["pip", "install", "-r", os.path.join(name, "requirements.txt")], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
+    if res.returncode != 0:
+      err("Error installing dependencies: {}".format(res.stderr), 1)
+      return False
+
+  os.makedirs(os.path.join("data", name), exist_ok=True)
+  for f in os.listdir(name):
+    if (f.endswith(".txt") and f != "requirements.txt") or f.endswith(".json"):
+      copyfile(os.path.join(name, f), os.path.join("data", name, f))
+
+  config["repos"].append({"source": source, "location": name, "name": name, "module": module})
+  with open("config.json", "w") as oF:
+    oF.write(json.dumps(config, indent=2))
+  cmds.append(name)
+
+  say("Installed. Run with `{}`".format(name), 1)
+  return True
+
+
+def run(cmd):
+  name, *args = cmd.split()
+  try:
+    sys.path.append(os.path.join(os.getcwd(), name))
+    sys.argv = ["parachute"] + args
+    os.makedirs(os.path.join("data", name), exist_ok=True)
+    os.chdir(os.path.join("data", name))
+    if name not in modules:
+      if [r["module"] for r in config["repos"] if r["name"] == name][0]:
+        modules[name] = importlib.import_module("{}.__main__".format(name))
+        print("imported")
+      else:
+        modules[name] = importlib.import_module(name)
+    else:
+      importlib.reload(modules[name])
+  except Exception as e:
+    warn("Something went wrong while running {}: {}".format(name, e), 1)
+  except SystemExit as e:
+    pass
+  finally:
+    sys.path.pop(-1)
+    os.chdir(os.path.join("..", ".."))
+
+
+cmds = ["help", "install", "quit"] + [repo["name"] for repo in config["repos"]]
+readline.parse_and_bind("tab: complete")
+readline.set_completer(lambda text, i: [cmd for cmd in cmds if cmd.startswith(text)][i])
+
+modules = {}
 print("Parachute loaded. Enter `help` for help.")
 while True:
   try:
@@ -105,60 +176,9 @@ while True:
 help      - prints this message
 install   - installs a program
 quit      - quit parachute""")
-
   elif cmd.startswith("install"):
-    source = ask("Please enter a source URL: ", 1)
-    if not source.endswith(".git") or reURL.match(source) is None:
-      err("Invalid source URL.", 1)
-      continue
-    name = reName.match(source).group(1)
-    say("Downloading " + name, 2)
-    def clone(url, dest):
-      porcelain.clone(url, dest, errstream=BytesIO())
-      return True
-    if recurse(source, name, clone):
-      if module := os.path.isfile(os.path.join(name, "setup.py")):
-        say("Installing " + name, 2)
-        res = subprocess.run(["pip", "install", os.path.join(".", name)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
-        if res.returncode != 0:
-          err("Error installing module {}: {}".format(name, res.stderr), 2)
-          continue
-      if os.path.isfile(os.path.join(name, "requirements.txt")):
-        say("Installing dependencies", 2)
-        res = subprocess.run(["pip", "install", "-r", os.path.join(name, "requirements.txt")], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
-        if res.returncode != 0:
-          err("Error installing dependencies: {}".format(res.stderr), 2)
-          continue
-      config["repos"].append({"source": source, "location": name, "name": name, "module": module})
-      with open("config.json", "w") as oF:
-        oF.write(json.dumps(config, indent=2))
-      cmds.append(name)
-    else:
-      err("Something went wrong while installing " + name, 2)
-      continue
-    say("Installed. Run with `{}`".format(name), 2)
-
+    install()
   elif cmd.startswith("quit") or cmd.startswith("exit"):
     break
-
   elif cmd.split()[0] in cmds: #an installed program
-    name, *args = cmd.split()
-    try:
-      sys.path.append(os.path.join(os.getcwd(), name))
-      sys.argv = ["parachute"] + args
-      os.chdir(name)
-      if name not in modules:
-        if [r["module"] for r in config["repos"] if r["name"] == name][0]:
-          modules[name] = importlib.import_module("{}.__main__".format(name))
-          print("imported")
-        else:
-          modules[name] = importlib.import_module(name)
-      else:
-        importlib.reload(modules[name])
-    except Exception as e:
-      warn("Something went wrong while running {}: {}".format(name, e), 1)
-    except SystemExit as e:
-      pass
-    finally:
-      sys.path.pop(-1)
-      os.chdir("..")
+    run(cmd)
