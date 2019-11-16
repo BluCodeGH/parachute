@@ -2,6 +2,7 @@ import importlib
 from io import BytesIO
 import json
 import os
+import subprocess
 import sys
 import re
 import readline
@@ -26,6 +27,7 @@ except FileNotFoundError:
     oF.write(json.dumps({"repos": []}, indent=2))
   config = {"repos": []}
 
+# recursively apply fn across every submodule in a repo
 def recurse(url, dest, fn):
   try:
     res = fn(url, dest)
@@ -35,7 +37,7 @@ def recurse(url, dest, fn):
   try:
     with open(os.path.join(dest, ".gitmodules")) as submodules:
       lines = submodules.read().splitlines()
-    sm = [None, None]
+    sm = [None, None] # build url, path from multiple lines
     for line in lines:
       if line[0] == "[":
         if None not in sm and recurse(*sm, fn) is None:
@@ -115,6 +117,8 @@ quit      - quit parachute""")
       porcelain.clone(url, dest, errstream=BytesIO())
       return True
     if recurse(source, name, clone):
+      if os.path.isfile(os.path.join(name, "requirements.txt")):
+        subprocess.run(["pip", "install", "-r", os.path.join(name, "requirements.txt")])
       os.makedirs(os.path.join("data", name), exist_ok=True)
       config["repos"].append({"source": source, "location": name, "name": name})
       with open("config.json", "w") as oF:
@@ -132,7 +136,7 @@ quit      - quit parachute""")
     name, *args = cmd.split()
     try:
       sys.path.append(os.path.join(os.getcwd(), name))
-      sys.argv = [""] + args
+      sys.argv = ["parachute"] + args
       os.makedirs(os.path.join("data", name), exist_ok=True)
       os.chdir(os.path.join("data", name))
       if name not in modules:
